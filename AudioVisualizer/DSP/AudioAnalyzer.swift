@@ -98,26 +98,42 @@ final class AudioAnalyzer: @unchecked Sendable {
             }
         }
 
-        ring.write(monoScratch)
-        samplesSinceLastFFT += frameCount
-
+        // hop 単位で区切って書き込む。
+        // 1 バッファに複数 hop 含まれる場合 (例: tap 4096 / hop 256) にまとめて 1 回しか解析しないと、
+        // 更新間隔が hop ではなくタップ間隔になってしまう。区切って処理することで
+        // 「更新頻度は hop で決まる」という前提を実際に守る。
         let hop = configuration.resolvedHopSize()
-        guard samplesSinceLastFFT >= hop else { return }
-        samplesSinceLastFFT = 0
+        let sampleRate = buffer.format.sampleRate
+        var offset = 0
+
+        while offset < frameCount {
+            let chunk = min(hop - samplesSinceLastFFT, frameCount - offset)
+            monoScratch.withUnsafeBufferPointer { pointer in
+                ring.write(UnsafeBufferPointer(rebasing: pointer[offset..<(offset + chunk)]))
+            }
+            offset += chunk
+            samplesSinceLastFFT += chunk
+
+            guard samplesSinceLastFFT >= hop else { break }
+            samplesSinceLastFFT = 0
+            emitResult(sampleRate: sampleRate)
+        }
+    }
+
+    private func emitResult(sampleRate: Double) {
+        guard onResult != nil else { return }
 
         let window = ring.latest(fft.size)
         let magnitudes = fft.magnitudes(of: window)
-        let sampleRate = buffer.format.sampleRate
         let energy = bandAnalyzer.analyze(magnitudes: magnitudes, sampleRate: sampleRate)
 
-        let result = AnalysisResult(
+        onResult?(AnalysisResult(
             waveform: Self.downsample(window, to: configuration.waveformPoints),
             magnitudes: magnitudes,
             energy: energy,
             sampleRate: sampleRate,
             fftSize: fft.size
-        )
-        onResult?(result)
+        ))
     }
 
     /// 波形描画用の間引き。ブロックごとに絶対値最大のサンプルを採用し、ピークを潰さない。

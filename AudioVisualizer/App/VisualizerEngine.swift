@@ -112,12 +112,27 @@ final class VisualizerEngine {
     /// バックグラウンド遷移時に呼ぶ。復帰時に自動再開できるよう意図だけ残す。
     func handleScenePhaseChange(isActive: Bool) {
         if isActive {
+            // 設定アプリでマイクを許可して戻ってきたケースを拾う。
+            refreshPermissionStatus()
             if shouldResumeAfterInterruption, status != .permissionDenied {
                 startCapture()
             }
         } else if status.isRunning {
             shouldResumeAfterInterruption = true
             stop(preserveResumeIntent: true)
+        }
+    }
+
+    /// マイク権限の状態を再評価する。
+    ///
+    /// 権限拒否画面から設定アプリへ行って許可した場合、アプリが再起動されないこともあるため、
+    /// フォアグラウンド復帰時と「再確認」ボタンから呼んで拒否画面から抜けられるようにする。
+    func refreshPermissionStatus() {
+        switch MicrophonePermission.current {
+        case .granted, .undetermined:
+            if status == .permissionDenied { status = .idle }
+        case .denied:
+            status = .permissionDenied
         }
     }
 
@@ -134,7 +149,10 @@ final class VisualizerEngine {
 
         if needsSourceRestart {
             // タップのバッファサイズはインストール時にしか効かないので貼り直す。
+            // 再開は startCapture() 経由にして、失敗したら status に出す (無音のまま「解析中」を防ぐ)。
+            let wasRunning = status.isRunning
             source.updateConfiguration(Self.inputConfiguration(from: newValue))
+            if wasRunning { startCapture() }
         }
     }
 

@@ -6,7 +6,7 @@ final class AudioAnalyzerTests: XCTestCase {
 
     private let sampleRate: Double = 44_100
 
-    /// 100Hz の正弦波を流し込むと low 帯だけが立つ (パイプライン全体の疎通確認)。
+    /// 低域の正弦波を流し込むと low 帯だけが立つ (パイプライン全体の疎通確認)。
     func testLowFrequencyToneRaisesLowBand() throws {
         var configuration = AudioAnalyzer.Configuration.default
         configuration.fftSize = 2048
@@ -15,7 +15,9 @@ final class AudioAnalyzerTests: XCTestCase {
         var results: [AnalysisResult] = []
         analyzer.onResult = { results.append($0) }
 
-        analyzer.ingest(try buffer(frequency: 100, amplitude: 0.5, frames: 2048))
+        // EMA が収束するまで定常音を流す。周波数はビン境界に合わせ、
+        // バッファを繰り返しても位相が途切れない (= 余計な漏れが出ない) ようにしている。
+        try feed(analyzer, frequency: binAlignedFrequency(bin: 5, frames: 2048), frames: 2048, times: 8)
 
         let result = try XCTUnwrap(results.last)
         XCTAssertEqual(result.fftSize, 2048)
@@ -25,13 +27,13 @@ final class AudioAnalyzerTests: XCTestCase {
         XCTAssertLessThan(result.energy.mid, 0.2)
     }
 
-    /// 10kHz なら high 帯が立つ。
+    /// 約 10kHz なら high 帯が立つ。
     func testHighFrequencyToneRaisesHighBand() throws {
         let analyzer = AudioAnalyzer()
         var results: [AnalysisResult] = []
         analyzer.onResult = { results.append($0) }
 
-        analyzer.ingest(try buffer(frequency: 10_000, amplitude: 0.5, frames: 2048))
+        try feed(analyzer, frequency: binAlignedFrequency(bin: 464, frames: 2048), frames: 2048, times: 8)
 
         let result = try XCTUnwrap(results.last)
         XCTAssertGreaterThan(result.energy.high, 0.3)
@@ -57,6 +59,62 @@ final class AudioAnalyzerTests: XCTestCase {
 
         analyzer.ingest(try buffer(frequency: 440, amplitude: 0.5, frames: 1024))
         XCTAssertEqual(callCount, 2)
+    }
+
+    /// 1 バッファに複数 hop 含まれる場合は、その回数だけ解析結果が出る。
+    /// (まとめて 1 回にすると更新間隔が hop ではなくタップ間隔になってしまう)
+    func testBufferSpanningMultipleHopsEmitsOnePerHop() throws {
+        var configuration = AudioAnalyzer.Configuration.default
+        configuration.fftSize = 1024
+        configuration.hopSize = 256
+        let analyzer = AudioAnalyzer(configuration: configuration)
+
+        var callCount = 0
+        analyzer.onResult = { _ in callCount += 1 }
+
+        analyzer.ingest(try buffer(frequency: 440, amplitude: 0.5, frames: 4096))
+
+        XCTAssertEqual(callCount, 16)
+    }
+
+    /// hop に満たない端数は次のバッファへ持ち越される (切り捨てない)。
+    func testRemainderCarriesOverToNextBuffer() throws {
+        var configuration = AudioAnalyzer.Configuration.default
+        configuration.fftSize = 1024
+        configuration.hopSize = 512
+        let analyzer = AudioAnalyzer(configuration: configuration)
+
+        var callCount = 0
+        analyzer.onResult = { _ in callCount += 1 }
+
+        // 768 = 512 (1 回) + 端数 256
+        analyzer.ingest(try buffer(frequency: 440, amplitude: 0.5, frames: 768))
+        XCTAssertEqual(callCount, 1)
+
+        // 端数 256 が残っているので、さらに 256 で hop に到達する。
+        analyzer.ingest(try buffer(frequency: 440, amplitude: 0.5, frames: 256))
+        XCTAssertEqual(callCount, 2)
+    }
+
+    /// hop ごとの窓は「その時点までのサンプル」で切られる。
+    /// 無音 → 正弦波と流したとき、最初の hop はまだ無音を多く含み、後の hop ほどエネルギーが上がる。
+    func testEachHopUsesItsOwnWindow() throws {
+        var configuration = AudioAnalyzer.Configuration.default
+        configuration.fftSize = 1024
+        configuration.hopSize = 256
+        let analyzer = AudioAnalyzer(configuration: configuration)
+
+        var results: [AnalysisResult] = []
+        analyzer.onResult = { results.append($0) }
+
+        analyzer.ingest(try silentBuffer(frames: 1024))
+        results.removeAll()
+        analyzer.ingest(try buffer(frequency: 100, amplitude: 0.5, frames: 1024))
+
+        XCTAssertEqual(results.count, 4)
+        // 4 つの窓がすべて同一なら「まとめて 1 回」と変わらない。異なることを確認する。
+        XCTAssertNotEqual(results[0].waveform, results[3].waveform)
+        XCTAssertGreaterThan(results[3].energy.low, results[0].energy.low)
     }
 
     /// ステレオ入力はモノラルに畳まれる (逆位相を入れると打ち消し合う)。
@@ -119,6 +177,20 @@ final class AudioAnalyzerTests: XCTestCase {
             channel[index] = amplitude * sinf(Float(2 * Double.pi * frequency * Double(index) / sampleRate))
         }
         return buffer
+    }
+
+    /// `frames` サンプルにちょうど整数周期入る周波数。バッファを繰り返しても波形が連続する。
+    private func binAlignedFrequency(bin: Int, frames: Int) -> Double {
+        Double(bin) * sampleRate / Double(frames)
+    }
+
+    private func feed(_ analyzer: AudioAnalyzer, frequency: Double, frames: AVAudioFrameCount, times: Int) throws {
+        let input = try buffer(frequency: frequency, amplitude: 0.5, frames: frames)
+        for _ in 0..<times { analyzer.ingest(input) }
+    }
+
+    private func silentBuffer(frames: AVAudioFrameCount) throws -> AVAudioPCMBuffer {
+        try buffer(frequency: 0, amplitude: 0, frames: frames)
     }
 
     private func stereoBuffer(frequency: Double, amplitude: Float, frames: AVAudioFrameCount, invertRightChannel: Bool) throws -> AVAudioPCMBuffer {

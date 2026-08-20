@@ -3,6 +3,8 @@ import UIKit
 
 /// マイク権限が拒否されたときのフォールバック UI。設定アプリへ誘導する。
 struct PermissionDeniedView: View {
+    @Environment(VisualizerEngine.self) private var engine
+
     var body: some View {
         VStack(spacing: 20) {
             Image(systemName: "mic.slash.fill")
@@ -17,11 +19,19 @@ struct PermissionDeniedView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
 
-            Button("設定を開く") {
-                guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
-                UIApplication.shared.open(url)
+            VStack(spacing: 12) {
+                Button("設定を開く") {
+                    guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+                    UIApplication.shared.open(url)
+                }
+                .buttonStyle(.borderedProminent)
+
+                // 設定を変えてもアプリが再起動されないことがあるので、手動で再確認できるようにしておく。
+                Button("再確認") {
+                    engine.refreshPermissionStatus()
+                }
+                .buttonStyle(.bordered)
             }
-            .buttonStyle(.borderedProminent)
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -31,4 +41,5 @@ struct PermissionDeniedView: View {
 
 #Preview {
     PermissionDeniedView()
+        .environment(VisualizerEngine())
 }

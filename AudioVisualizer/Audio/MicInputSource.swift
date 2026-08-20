@@ -56,11 +56,14 @@ final class MicInputSource: AudioInputSource {
         return format.sampleRate > 0 ? format.sampleRate : AVAudioSession.sharedInstance().sampleRate
     }
 
+    /// 設定を差し替える。
+    ///
+    /// `installTap` のバッファサイズはインストール時にしか効かないので、稼働中なら一度停止する。
+    /// 再開は呼び出し側の責務 (`start()` の throw を握り潰して「解析中なのに何も来ない」状態を
+    /// 作らないため、ここでは再開しない)。
     func updateConfiguration(_ configuration: Configuration) {
-        let wasRunning = isRunning
-        if wasRunning { stop() }
+        if isRunning { stop() }
         self.configuration = configuration
-        if wasRunning { try? start() }
     }
 
     func start() throws {
