@@ -5,7 +5,7 @@ final class ColorMapperTests: XCTestCase {
 
     /// Hue は 1 更新あたりの最大変化量を超えて動かない (ちらつき防止)。
     func testHueChangeIsRateLimited() {
-        var mapper = ColorMapper(configuration: configuration(maxHueChange: 0.01), initial: HSBColor(hue: 0.5, saturation: 0, brightness: 0))
+        var mapper = ColorMapper(configuration: configuration(maxHueChange: 0.01, hueSource: .midEnergy), initial: HSBColor(hue: 0.5, saturation: 0, brightness: 0))
         // 目標は hue 0.8 (mid = 0.8) だが、1 回では 0.01 しか進まない。
         let result = mapper.map(BandEnergy(low: 0, mid: 0.8, high: 0, overall: 0))
         XCTAssertEqual(result.hue, 0.51, accuracy: 0.0001)
@@ -13,7 +13,7 @@ final class ColorMapperTests: XCTestCase {
 
     /// 何度更新しても目標へ向かって進み続ける。
     func testHueEventuallyReachesTarget() {
-        var mapper = ColorMapper(configuration: configuration(maxHueChange: 0.05), initial: HSBColor(hue: 0.0, saturation: 0, brightness: 0))
+        var mapper = ColorMapper(configuration: configuration(maxHueChange: 0.05, hueSource: .midEnergy), initial: HSBColor(hue: 0.0, saturation: 0, brightness: 0))
         for _ in 0..<20 {
             _ = mapper.map(BandEnergy(low: 0, mid: 0.5, high: 0, overall: 0))
         }
@@ -98,11 +98,89 @@ final class ColorMapperTests: XCTestCase {
         XCTAssertEqual(mapper.current, .idle)
     }
 
+    // MARK: - 音色ベースの色相 (spectralBalance)
+
+    /// 単一帯域だけが鳴っていれば、その帯域のアンカー色相そのものになる。
+    func testSingleBandLandsOnItsAnchorHue() throws {
+        let anchors = ColorMapper.BandHueAnchors.default
+
+        let low = try XCTUnwrap(ColorMapper.spectralBalance(low: 1, mid: 0, high: 0, anchors: anchors))
+        XCTAssertEqual(low.hue, anchors.low, accuracy: 0.0001)
+
+        let mid = try XCTUnwrap(ColorMapper.spectralBalance(low: 0, mid: 1, high: 0, anchors: anchors))
+        XCTAssertEqual(mid.hue, anchors.mid, accuracy: 0.0001)
+
+        let high = try XCTUnwrap(ColorMapper.spectralBalance(low: 0, mid: 0, high: 1, anchors: anchors))
+        XCTAssertEqual(high.hue, anchors.high, accuracy: 0.0001)
+    }
+
+    /// 単一帯域なら重心の長さは最大 (1)。音色がその帯域に振り切っている状態。
+    func testSingleBandHasFullMagnitude() throws {
+        let balance = try XCTUnwrap(ColorMapper.spectralBalance(low: 0, mid: 1, high: 0, anchors: .default))
+        XCTAssertEqual(balance.magnitude, 1, accuracy: 0.0001)
+    }
+
+    /// 3 帯域が拮抗していると重心はほぼ原点に落ちる (向きが定まらない)。
+    func testBalancedBandsCollapseToOrigin() throws {
+        let balance = try XCTUnwrap(ColorMapper.spectralBalance(low: 0.5, mid: 0.5, high: 0.5, anchors: .default))
+        XCTAssertEqual(balance.magnitude, 0, accuracy: 0.0001)
+    }
+
+    /// 全帯域が無音なら重心を決められない。
+    func testSilenceHasNoBalance() {
+        XCTAssertNil(ColorMapper.spectralBalance(low: 0, mid: 0, high: 0, anchors: .default))
+    }
+
+    /// 帯域の比率が変われば色相も変わる。低域寄りと高域寄りで別の色になること。
+    func testDifferentTimbresProduceDifferentHues() throws {
+        let bassHeavy = try XCTUnwrap(ColorMapper.spectralBalance(low: 1.0, mid: 0.2, high: 0.1, anchors: .default))
+        let trebleHeavy = try XCTUnwrap(ColorMapper.spectralBalance(low: 0.1, mid: 0.2, high: 1.0, anchors: .default))
+        XCTAssertNotEqual(bassHeavy.hue, trebleHeavy.hue, accuracy: 0.05)
+    }
+
+    /// 帯域比が同じなら音量が変わっても色相は変わらない (音量ではなく音色に反応する)。
+    func testHueIsInvariantToOverallLevel() throws {
+        let quiet = try XCTUnwrap(ColorMapper.spectralBalance(low: 0.2, mid: 0.1, high: 0.05, anchors: .default))
+        let loud = try XCTUnwrap(ColorMapper.spectralBalance(low: 0.8, mid: 0.4, high: 0.2, anchors: .default))
+        XCTAssertEqual(quiet.hue, loud.hue, accuracy: 0.0001)
+    }
+
+    /// 重心が小さすぎるフレームでは色相を動かさない (拮抗時のちらつき防止)。
+    func testHueHoldsStillWhenBandsAreBalanced() {
+        var configuration = self.configuration(maxHueChange: 0.5)
+        configuration.minimumBalanceMagnitude = 0.02
+        var mapper = ColorMapper(configuration: configuration, initial: HSBColor(hue: 0.42, saturation: 0, brightness: 0))
+
+        let result = mapper.map(BandEnergy(low: 0.5, mid: 0.5, high: 0.5, overall: 0.5))
+        XCTAssertEqual(result.hue, 0.42, accuracy: 0.0001)
+    }
+
+    /// 色相環を三等分しているので、重みの偏り方しだいで全域に到達できる。
+    func testFullHueWheelIsReachable() {
+        var seen = Set<Int>()
+        for low in stride(from: 0.0, through: 1.0, by: 0.1) {
+            for mid in stride(from: 0.0, through: 1.0, by: 0.1) {
+                for high in stride(from: 0.0, through: 1.0, by: 0.1) {
+                    guard let balance = ColorMapper.spectralBalance(
+                        low: Float(low), mid: Float(mid), high: Float(high), anchors: .default
+                    ), balance.magnitude >= 0.02 else { continue }
+                    seen.insert(Int(balance.hue * 12) % 12)
+                }
+            }
+        }
+        // 色相環を 12 分割したセクタすべてに到達できること。
+        XCTAssertEqual(seen.count, 12, "到達できない色相セクタがある: \(Set(0..<12).subtracting(seen).sorted())")
+    }
+
     // MARK: - Helpers
 
-    private func configuration(maxHueChange: Double = 0.015) -> ColorMapper.Configuration {
+    private func configuration(
+        maxHueChange: Double = 0.015,
+        hueSource: ColorMapper.HueSource = .spectralBalance
+    ) -> ColorMapper.Configuration {
         var configuration = ColorMapper.Configuration.default
         configuration.maxHueChangePerUpdate = maxHueChange
+        configuration.hueSource = hueSource
         return configuration
     }
 }

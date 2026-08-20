@@ -84,8 +84,14 @@ final class MicInputSource: AudioInputSource {
 
         removeTap()
         input.installTap(onBus: 0, bufferSize: configuration.tapBufferSize, format: format) { [weak self] buffer, _ in
-            // ここはオーディオスレッド。重い処理は絶対に書かない (送るだけ)。
-            self?.subject.send(buffer)
+            // ここはオーディオスレッド。重い処理は絶対に書かない (コピーして送るだけ)。
+            //
+            // タップに渡される buffer はエンジンが使い回す。下流は `receive(on:)` で
+            // 別キューへ逃がしてから読むので、このブロックを抜けた時点で中身は保証されない
+            // (frameLength が 0 に戻り、解析側の `guard frameCount > 0` で無言のうちに捨てられる)。
+            // したがってブロック内でコピーを取ってから流す。
+            guard let copy = buffer.copyForAsyncDelivery() else { return }
+            self?.subject.send(copy)
         }
         tapInstalled = true
 
@@ -134,5 +140,36 @@ final class MicInputSource: AudioInputSource {
         guard tapInstalled else { return }
         engine.inputNode.removeTap(onBus: 0)
         tapInstalled = false
+    }
+}
+
+// MARK: - バッファのコピー
+
+extension AVAudioPCMBuffer {
+
+    /// タップのバッファを別スレッドへ安全に渡すための複製を作る。
+    ///
+    /// `AudioBufferList` 単位でコピーするので、インターリーブ / ノンインターリーブや
+    /// float 以外のフォーマットでも中身を取りこぼさない。
+    func copyForAsyncDelivery() -> AVAudioPCMBuffer? {
+        guard frameLength > 0,
+              let copy = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameLength) else { return nil }
+        copy.frameLength = frameLength
+
+        let source = audioBufferList.pointee
+        let destination = copy.mutableAudioBufferList.pointee
+        guard source.mNumberBuffers == destination.mNumberBuffers else { return nil }
+
+        let sourceBuffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: audioBufferList))
+        let destinationBuffers = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
+
+        for index in 0..<Int(source.mNumberBuffers) {
+            guard let sourceData = sourceBuffers[index].mData,
+                  let destinationData = destinationBuffers[index].mData else { return nil }
+            let byteCount = min(sourceBuffers[index].mDataByteSize, destinationBuffers[index].mDataByteSize)
+            memcpy(destinationData, sourceData, Int(byteCount))
+            destinationBuffers[index].mDataByteSize = byteCount
+        }
+        return copy
     }
 }

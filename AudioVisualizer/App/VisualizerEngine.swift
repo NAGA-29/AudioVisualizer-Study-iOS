@@ -41,9 +41,15 @@ final class VisualizerEngine {
     @ObservationIgnored private let source: MicInputSource
     @ObservationIgnored private var colorMapper: ColorMapper
     @ObservationIgnored private let sessionObserver = AudioSessionObserver()
+    /// 解析結果を main へ流す頻度の上限 (画面のリフレッシュレートを超えて送っても意味がない)。
+    @ObservationIgnored private nonisolated let uiGate = UIUpdateGate(minimumInterval: 1.0 / 60.0)
     @ObservationIgnored private var cancellables = Set<AnyCancellable>()
     /// 割り込み/バックグラウンド遷移で止めたとき、復帰後に再開すべきかどうか。
     @ObservationIgnored private var shouldResumeAfterInterruption = false
+    /// 自前のセッション再構成が落ち着くまでルート変更起因の再起動を抑止する期限。
+    @ObservationIgnored private var routeChangeSuppressedUntil: Date = .distantPast
+    /// 直近にルート変更で再起動した時刻。連続再起動の歯止め。
+    @ObservationIgnored private var lastRouteDrivenRestart: Date = .distantPast
 
     init(settings: VisualizerSettings = .default) {
         self.settings = settings
@@ -51,12 +57,20 @@ final class VisualizerEngine {
         self.analyzer = AudioAnalyzer(configuration: Self.analyzerConfiguration(from: settings))
         self.colorMapper = ColorMapper(configuration: Self.colorConfiguration(from: settings))
 
-        analyzer.onResult = { @Sendable [weak self] result in
-            // 解析キュー上。UI 反映は main へ渡す。
+        analyzer.onResult = { @Sendable [weak self, uiGate] result in
+            // 解析キュー上。
+            //
+            // 解析は hop ごとに走るので 48kHz / hop 512 だと毎秒 94 回結果が出る。
+            // これを全部 main へ投げると、1 回あたり数 KB の AnalysisResult のコピーと
+            // SwiftUI の無効化が毎秒 94 回積み上がり、main が詰まって
+            // 「設定シートが開かない / 操作に反応しない」状態になる。
+            // 画面は 60fps が上限なので、間引いて最新の結果だけを反映する。
+            guard uiGate.shouldForward() else { return }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     self?.apply(result)
                 }
+                uiGate.markDelivered()
             }
         }
 
@@ -93,6 +107,8 @@ final class VisualizerEngine {
 
     func stop(preserveResumeIntent: Bool = false) {
         if !preserveResumeIntent { shouldResumeAfterInterruption = false }
+        // 停止時の setActive(false) もルート変更通知を出すので同様に抑止する。
+        routeChangeSuppressedUntil = Date().addingTimeInterval(1.0)
         source.stop()
         analysisQueue.async { [analyzer] in analyzer.reset() }
         if status.isRunning { status = .idle }
@@ -159,6 +175,9 @@ final class VisualizerEngine {
     // MARK: - Private
 
     private func startCapture() {
+        // setCategory / setActive は自分でもルート変更通知を発生させる。
+        // それを外部要因と誤認して再起動すると無限ループになるため、直後の通知は無視する。
+        routeChangeSuppressedUntil = Date().addingTimeInterval(1.0)
         do {
             try source.start()
             status = .running
@@ -193,11 +212,30 @@ final class VisualizerEngine {
             }
 
         case let .routeChanged(reason, _):
+            // 表示用のフラグは常に最新化する (再起動するかどうかとは別問題)。
             isHeadphoneOutputActive = AudioSessionObserver.isUsingHeadphoneOutput
+
+            // `.categoryChange` は実質すべて自分の `setCategory` が原因。
+            // ここで再起動すると再び `setCategory` が走って通知が返ってくるため、
+            // 「再起動 → 通知 → 再起動」で main が詰まりアプリが固まる。対象から外す。
             switch reason {
-            case .newDeviceAvailable, .oldDeviceUnavailable, .override, .categoryChange:
+            case .newDeviceAvailable, .oldDeviceUnavailable, .override:
                 // 入力フォーマット (サンプルレート/チャンネル数) が変わり得るのでタップを貼り直す。
                 guard status.isRunning else { return }
+
+                let now = Date()
+                // 自前のセッション操作の直後は無視する。
+                guard now >= routeChangeSuppressedUntil else {
+                    logger.info("route change ignored (self-inflicted)")
+                    return
+                }
+                // 万一抑止をすり抜けても暴走させないための歯止め。
+                guard now.timeIntervalSince(lastRouteDrivenRestart) >= 1.0 else {
+                    logger.warning("route change restart throttled")
+                    return
+                }
+                lastRouteDrivenRestart = now
+
                 source.stop()
                 startCapture()
             default:
@@ -230,6 +268,57 @@ final class VisualizerEngine {
     private static func colorConfiguration(from settings: VisualizerSettings) -> ColorMapper.Configuration {
         var configuration = ColorMapper.Configuration.default
         configuration.maxHueChangePerUpdate = settings.maxHueChangePerUpdate
+        configuration.hueSource = settings.hueSource
         return configuration
+    }
+}
+
+/// 解析キューから main へ結果を流す量を制限するゲート。
+///
+/// 解析は hop ごとに走るため 48kHz / hop 512 では毎秒約 94 回結果が出る。
+/// 一方 main が描画できるのは 60fps が上限。差分を無制限に `DispatchQueue.main.async` へ
+/// 積むと main のキューが延々と伸び続け、数秒で操作を一切受け付けなくなる
+/// (症状: 波形が一瞬動いた後に固まる / 設定シートが開かない)。
+///
+/// そこで 2 段で絞る:
+/// 1. 時間による間引き — 画面のリフレッシュレートを超える分は捨てる
+/// 2. バックプレッシャー — main がまだ前回分を処理していなければ送らない
+///
+/// これで main に積まれる更新は常に高々 1 件になり、キューが伸びなくなる。
+private final class UIUpdateGate: @unchecked Sendable {
+
+    private let minimumInterval: Double
+    private let lock = NSLock()
+    private var lastForwardedUptime: UInt64 = 0
+    private var isDeliveryInFlight = false
+
+    init(minimumInterval: Double) {
+        self.minimumInterval = minimumInterval
+    }
+
+    /// 解析キュー上から呼ぶ。true を返したときだけ main へ送ること。
+    func shouldForward() -> Bool {
+        let now = DispatchTime.now().uptimeNanoseconds
+        lock.lock()
+        defer { lock.unlock() }
+
+        // main がまだ前回分を反映していないなら、今回は捨てる (最新値は次の機会に届く)。
+        guard !isDeliveryInFlight else { return false }
+
+        if lastForwardedUptime > 0 {
+            let elapsed = Double(now - lastForwardedUptime) / 1_000_000_000
+            guard elapsed >= minimumInterval else { return false }
+        }
+
+        lastForwardedUptime = now
+        isDeliveryInFlight = true
+        return true
+    }
+
+    /// main 側で反映が終わったら呼ぶ。次の転送を許可する。
+    func markDelivered() {
+        lock.lock()
+        isDeliveryInFlight = false
+        lock.unlock()
     }
 }

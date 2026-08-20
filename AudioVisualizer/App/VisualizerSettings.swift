@@ -36,6 +36,12 @@ struct VisualizerSettings: Equatable {
     /// Hue の 1 更新あたり最大変化量 (ちらつき抑制)。
     var maxHueChangePerUpdate: Double = 0.015
 
+    /// 色相を何から決めるか。`.spectralBalance` は音量ではなく音色 (帯域比) に反応する。
+    var hueSource: ColorMapper.HueSource = .spectralBalance
+
+    /// 波形/スペクトラムを左端から右端へ何色相ぶん散らすか。0 で単色に戻る。
+    var hueSpread: Double = 0.5
+
     var isBeatDetectionEnabled: Bool = true
 
     var displayMode: DisplayMode = .spectrum

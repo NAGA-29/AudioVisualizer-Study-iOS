@@ -58,11 +58,19 @@ struct TuningSheet: View {
                 }
 
                 Section {
+                    Picker("色相の決め方", selection: binding(\.hueSource)) {
+                        ForEach(ColorMapper.HueSource.allCases) { source in
+                            Text(source.label).tag(source)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
                     slider("Hue 変化量/更新", value: binding(\.maxHueChangePerUpdate), range: 0.002...0.08, format: "%.3f")
+                    slider("色の散らし幅", value: binding(\.hueSpread), range: 0...1, format: "%.2f")
                 } header: {
                     Text("色")
                 } footer: {
-                    Text("大きくすると色が機敏に動くがちらつく。小さくすると落ち着くが曲の変化に追従しない。")
+                    Text("「音色」は低/中/高の比率で色相を決めるので、音量ではなく曲の質感に反応する。「中域のみ」は旧来の挙動。散らし幅は波形/バーを左右で何色相ぶんずらすかで、0 で単色になる。")
                 }
             }
             .navigationTitle("チューニング")

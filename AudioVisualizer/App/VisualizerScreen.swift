@@ -25,29 +25,43 @@ struct VisualizerScreen: View {
     // MARK: - 背景
 
     private var background: some View {
-        Color(engine.color)
-            // 急な色変化を目に痛くしないための最終段のならし。
-            // (値そのものの平滑化は BandAnalyzer の EMA、色相の変化制限は ColorMapper 側で行っている)
-            .animation(.easeOut(duration: 0.1), value: engine.color)
-            .ignoresSafeArea()
+        // 単色ではなく色相をずらした 3 点のグラデーションにして、1 画面に複数の色を出す。
+        LinearGradient(
+            stops: [
+                .init(color: Color(engine.color.adjusted(brightness: 0.75)), location: 0),
+                .init(color: Color(engine.color), location: 0.55),
+                .init(color: Color(engine.color.shiftingHue(by: 0.12).adjusted(saturation: 1.1)), location: 1)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+        // 急な色変化を目に痛くしないための最終段のならし。
+        // (値そのものの平滑化は BandAnalyzer の EMA、色相の変化制限は ColorMapper 側で行っている)
+        .animation(.easeOut(duration: 0.1), value: engine.color)
+        .ignoresSafeArea()
     }
 
     // MARK: - 波形 / スペクトラム
 
     private var content: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !engine.status.isRunning)) { _ in
-            let accent = Color(engine.color.accent)
+            let accent = engine.color.accent
 
             VStack(spacing: 24) {
                 if engine.settings.displayMode != .spectrum {
-                    WaveformCanvas(samples: engine.snapshot.waveform, color: accent)
-                        .frame(height: engine.settings.displayMode == .both ? 140 : 260)
+                    WaveformCanvas(
+                        samples: engine.snapshot.waveform,
+                        baseColor: accent,
+                        hueSpread: engine.settings.hueSpread * 0.6
+                    )
+                    .frame(height: engine.settings.displayMode == .both ? 140 : 260)
                 }
                 if engine.settings.displayMode != .waveform {
                     SpectrumCanvas(
                         magnitudes: engine.snapshot.magnitudes,
                         sampleRate: engine.snapshot.sampleRate,
-                        color: accent
+                        baseColor: accent,
+                        hueSpread: engine.settings.hueSpread
                     )
                     .frame(height: engine.settings.displayMode == .both ? 180 : 300)
                 }
@@ -78,7 +92,11 @@ struct VisualizerScreen: View {
             Spacer()
 
             if engine.settings.showsDiagnostics {
-                BandMeterView(energy: engine.snapshot.energy)
+                BandMeterView(
+                    energy: engine.snapshot.energy,
+                    inputPeak: engine.snapshot.inputPeak,
+                    inputPeakDb: engine.snapshot.inputPeakDb
+                )
                     .padding(12)
                     .background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
                     .padding(.horizontal, 20)

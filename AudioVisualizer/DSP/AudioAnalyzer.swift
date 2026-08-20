@@ -10,8 +10,16 @@ struct AnalysisResult: Sendable {
     var energy: BandEnergy
     var sampleRate: Double
     var fftSize: Int
+    /// FFT / 正規化を通す前の生サンプルのピーク絶対値 (0.0〜1.0)。
+    ///
+    /// 「マイクが本当に無音を返しているのか、拾えているが正規化で潰れているのか」を
+    /// 切り分けるための診断値。帯域エネルギーとは独立で、一切の平滑化もかけない。
+    var inputPeak: Float
 
-    static let empty = AnalysisResult(waveform: [], magnitudes: [], energy: .silent, sampleRate: 0, fftSize: 0)
+    static let empty = AnalysisResult(waveform: [], magnitudes: [], energy: .silent, sampleRate: 0, fftSize: 0, inputPeak: 0)
+
+    /// 生入力のピークを dBFS で返す。無音のときは -infinity ではなく -120 に丸める。
+    var inputPeakDb: Float { inputPeak > 0 ? max(-120, 20 * log10(inputPeak)) : -120 }
 }
 
 /// PCM バッファ → FFT → 帯域エネルギー までを担う解析パイプライン。
@@ -48,6 +56,8 @@ final class AudioAnalyzer: @unchecked Sendable {
     private var ring: SampleRingBuffer
     private var samplesSinceLastFFT = 0
     private var monoScratch: [Float] = []
+    /// 前回の emit 以降に流れ込んだ生サンプルのピーク。emit のたびにリセットする。
+    private var inputPeakSinceLastFFT: Float = 0
 
     init(configuration: Configuration = .default) {
         self.configuration = configuration
@@ -73,6 +83,7 @@ final class AudioAnalyzer: @unchecked Sendable {
     func reset() {
         ring.reset()
         samplesSinceLastFFT = 0
+        inputPeakSinceLastFFT = 0
         bandAnalyzer.reset()
     }
 
@@ -96,6 +107,12 @@ final class AudioAnalyzer: @unchecked Sendable {
                 for c in 0..<channelCount { sum += channels[c][i] }
                 monoScratch[i] = sum * scale
             }
+        }
+
+        // 生サンプルのピークを控えておく (診断用。ここは FFT も正規化も通っていない値)。
+        for i in 0..<frameCount {
+            let magnitude = abs(monoScratch[i])
+            if magnitude > inputPeakSinceLastFFT { inputPeakSinceLastFFT = magnitude }
         }
 
         // hop 単位で区切って書き込む。
@@ -132,8 +149,10 @@ final class AudioAnalyzer: @unchecked Sendable {
             magnitudes: magnitudes,
             energy: energy,
             sampleRate: sampleRate,
-            fftSize: fft.size
+            fftSize: fft.size,
+            inputPeak: inputPeakSinceLastFFT
         ))
+        inputPeakSinceLastFFT = 0
     }
 
     /// 波形描画用の間引き。ブロックごとに絶対値最大のサンプルを採用し、ピークを潰さない。

@@ -6,8 +6,11 @@ import SwiftUI
 struct SpectrumCanvas: View {
     var magnitudes: [Float]
     var sampleRate: Double
-    var color: Color
+    /// バー全体の基準色。ここから周波数に応じて色相をずらしていく。
+    var baseColor: HSBColor
     var barCount: Int = 48
+    /// 左端から右端までに色相を何周ぶんずらすか。0 なら従来どおりの単色。
+    var hueSpread: Double = 0.5
 
     var body: some View {
         Canvas(opaque: false, rendersAsynchronously: false) { context, size in
@@ -26,9 +29,27 @@ struct SpectrumCanvas: View {
                     width: barWidth,
                     height: height
                 )
-                context.fill(Path(roundedRect: rect, cornerRadius: radius), with: .color(color))
+                context.fill(
+                    Path(roundedRect: rect, cornerRadius: radius),
+                    with: .color(Color(Self.barColor(base: baseColor, index: index, barCount: bars.count, value: value, hueSpread: hueSpread)))
+                )
             }
         }
+    }
+
+    /// バー 1 本の色。
+    ///
+    /// - 色相: 低域から高域へ向かって `hueSpread` のぶんだけ回す。これで 1 画面に複数の色相が並ぶ
+    /// - 明度: そのバーの値で持ち上げる。小さいバーが背景に沈み、鳴っている帯域だけが光る
+    static func barColor(base: HSBColor, index: Int, barCount: Int, value: Float, hueSpread: Double) -> HSBColor {
+        let position = barCount > 1 ? Double(index) / Double(barCount - 1) : 0
+        let level = Double(min(max(value, 0), 1))
+        return base
+            .shiftingHue(by: hueSpread * position)
+            .adjusted(
+                saturation: 0.75 + 0.25 * level,
+                brightness: 0.55 + 0.45 * level
+            )
     }
 
     /// 対数周波数軸で magnitude をまとめ、dB スケールで 0〜1 に落とす。
@@ -72,7 +93,7 @@ struct SpectrumCanvas: View {
     SpectrumCanvas(
         magnitudes: (0..<1024).map { 0.02 / Float($0 + 1) * 20 },
         sampleRate: 44_100,
-        color: .white
+        baseColor: HSBColor(hue: 0.55, saturation: 0.9, brightness: 1.0)
     )
     .frame(height: 220)
     .background(.black)
