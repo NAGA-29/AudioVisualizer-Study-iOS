@@ -42,6 +42,12 @@ struct VisualizerSettings: Equatable {
     /// 波形/スペクトラムを左端から右端へ何色相ぶん散らすか。0 で単色に戻る。
     var hueSpread: Double = 0.5
 
+    /// 波形表示の自動ゲイン。離れた音源でも波形が振れるように、直近のピークで正規化する。
+    var isWaveformAutoGainEnabled: Bool = true
+
+    /// 自動ゲインを切ったときの固定倍率。
+    var waveformManualGain: Float = 8
+
     var isBeatDetectionEnabled: Bool = true
 
     var displayMode: DisplayMode = .spectrum

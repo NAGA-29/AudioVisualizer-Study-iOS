@@ -262,6 +262,8 @@ final class VisualizerEngine {
         configuration.band.smoothing = settings.smoothing
         configuration.band.scaling = .decibel(floor: settings.floorDb, ceiling: settings.ceilingDb)
         configuration.band.beat.isEnabled = settings.isBeatDetectionEnabled
+        configuration.waveformGain.isAutomatic = settings.isWaveformAutoGainEnabled
+        configuration.waveformGain.manualGain = settings.waveformManualGain
         return configuration
     }
 

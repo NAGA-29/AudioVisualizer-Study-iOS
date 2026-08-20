@@ -48,6 +48,17 @@ struct TuningSheet: View {
                 }
 
                 Section {
+                    Toggle("波形の自動ゲイン", isOn: binding(\.isWaveformAutoGainEnabled))
+                    if !engine.settings.isWaveformAutoGainEnabled {
+                        slider("固定倍率", value: binding(\.waveformManualGain), range: 1...50, format: "%.0f×")
+                    }
+                } header: {
+                    Text("波形の振れ幅")
+                } footer: {
+                    Text("波形はフルスケール前提で描くので、離れた音源 (振幅 0.03 程度) だとほぼ直線に見える。自動ゲインは直近のピークに追従して表示上だけ持ち上げる。FFT や色には影響しない。")
+                }
+
+                Section {
                     slider("floor (dB)", value: binding(\.floorDb), range: -100...(-40), format: "%.0f")
                     slider("ceiling (dB)", value: binding(\.ceilingDb), range: -40...0, format: "%.0f")
                     Toggle("ビート検出", isOn: binding(\.isBeatDetectionEnabled))

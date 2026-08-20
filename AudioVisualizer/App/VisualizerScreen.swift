@@ -125,7 +125,8 @@ struct VisualizerScreen: View {
                 BandMeterView(
                     energy: engine.snapshot.energy,
                     inputPeak: engine.snapshot.inputPeak,
-                    inputPeakDb: engine.snapshot.inputPeakDb
+                    inputPeakDb: engine.snapshot.inputPeakDb,
+                    waveformGain: engine.snapshot.waveformGain
                 )
                     .padding(12)
                     .background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))

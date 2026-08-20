@@ -7,6 +7,8 @@ struct BandMeterView: View {
     /// FFT / 正規化を通す前の生入力ピーク。マイクが音を拾えているかの一次判定に使う。
     var inputPeak: Float = 0
     var inputPeakDb: Float = -120
+    /// 波形に適用中の表示ゲイン倍率。
+    var waveformGain: Float = 1
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -36,9 +38,16 @@ struct BandMeterView: View {
                 }
             }
             .frame(height: 6)
-            Text(inputPeak > 0 ? String(format: "%.0fdB", inputPeakDb) : "  --")
-                .frame(width: 52, alignment: .trailing)
+            Text(rawLabel)
+                .frame(width: 86, alignment: .trailing)
         }
+    }
+
+    /// 「生入力レベル (dBFS) と、波形に掛かっている倍率」。
+    private var rawLabel: String {
+        guard inputPeak > 0 else { return "--" }
+        let level = String(format: "%.0fdB", inputPeakDb)
+        return waveformGain > 1.05 ? "\(level) ×\(String(format: "%.0f", waveformGain))" : level
     }
 
     private func row(_ label: String, _ value: Float, _ tint: Color) -> some View {
@@ -62,7 +71,8 @@ struct BandMeterView: View {
     BandMeterView(
         energy: BandEnergy(low: 0.8, mid: 0.4, high: 0.2, overall: 0.6, isBeat: true),
         inputPeak: 0.35,
-        inputPeakDb: -9
+        inputPeakDb: -9,
+        waveformGain: 12
     )
         .padding()
         .background(.black)

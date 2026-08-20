@@ -15,8 +15,10 @@ struct AnalysisResult: Sendable {
     /// 「マイクが本当に無音を返しているのか、拾えているが正規化で潰れているのか」を
     /// 切り分けるための診断値。帯域エネルギーとは独立で、一切の平滑化もかけない。
     var inputPeak: Float
+    /// `waveform` に適用済みの表示ゲイン倍率。1.0 なら素のまま。
+    var waveformGain: Float
 
-    static let empty = AnalysisResult(waveform: [], magnitudes: [], energy: .silent, sampleRate: 0, fftSize: 0, inputPeak: 0)
+    static let empty = AnalysisResult(waveform: [], magnitudes: [], energy: .silent, sampleRate: 0, fftSize: 0, inputPeak: 0, waveformGain: 1)
 
     /// 生入力のピークを dBFS で返す。無音のときは -infinity ではなく -120 に丸める。
     var inputPeakDb: Float { inputPeak > 0 ? max(-120, 20 * log10(inputPeak)) : -120 }
@@ -38,6 +40,8 @@ final class AudioAnalyzer: @unchecked Sendable {
         var hopSize: Int?
         /// 描画用波形の点数。
         var waveformPoints: Int = 256
+        /// 波形表示のゲイン設定。
+        var waveformGain = WaveformGain.default
         var band = BandAnalyzer.Configuration.default
 
         static let `default` = Configuration()
@@ -45,6 +49,30 @@ final class AudioAnalyzer: @unchecked Sendable {
         func resolvedHopSize() -> Int {
             max(64, hopSize ?? fftSize / 4)
         }
+    }
+
+    /// 波形表示のゲイン。
+    ///
+    /// 波形はフルスケール (±1.0) 前提で描かれるが、マイクが実際に拾うレベルは
+    /// 離れた音源だと -30dBFS (振幅 0.03) 程度しかない。素のまま描くとほぼ直線に見えるため、
+    /// 直近のピークに追従して表示上だけ持ち上げる。
+    ///
+    /// これは「見た目」の調整であって、FFT や帯域エネルギーには一切影響しない。
+    struct WaveformGain: Equatable {
+        /// 自動ゲインを使うか。false なら `manualGain` を素通しで適用する。
+        var isAutomatic: Bool = true
+        /// 自動ゲイン時に目指す振幅。ピークをここへ合わせる。
+        var targetAmplitude: Float = 0.75
+        /// 倍率の上限。上げすぎると無音時のノイズまで拾って見える。
+        var maxGain: Float = 50
+        /// これ未満のピークは「無音」とみなし、増幅しない。
+        var noiseFloor: Float = 0.002
+        /// ピーク追従の減衰。1 に近いほどゆっくり下がる (音が止んでも倍率が急に跳ねない)。
+        var release: Float = 0.96
+        /// 自動を切ったときに使う固定倍率。
+        var manualGain: Float = 1
+
+        static let `default` = WaveformGain()
     }
 
     /// 解析結果のコールバック。呼び出しは `ingest(_:)` と同じキュー上。
@@ -58,6 +86,8 @@ final class AudioAnalyzer: @unchecked Sendable {
     private var monoScratch: [Float] = []
     /// 前回の emit 以降に流れ込んだ生サンプルのピーク。emit のたびにリセットする。
     private var inputPeakSinceLastFFT: Float = 0
+    /// 自動ゲインが追従している減衰つきピーク。
+    private var followedPeak: Float = 0
 
     init(configuration: Configuration = .default) {
         self.configuration = configuration
@@ -84,6 +114,7 @@ final class AudioAnalyzer: @unchecked Sendable {
         ring.reset()
         samplesSinceLastFFT = 0
         inputPeakSinceLastFFT = 0
+        followedPeak = 0
         bandAnalyzer.reset()
     }
 
@@ -141,18 +172,44 @@ final class AudioAnalyzer: @unchecked Sendable {
         guard onResult != nil else { return }
 
         let window = ring.latest(fft.size)
+        // FFT には必ず素の窓を渡す。表示ゲインは波形の見た目にだけ効かせる。
         let magnitudes = fft.magnitudes(of: window)
         let energy = bandAnalyzer.analyze(magnitudes: magnitudes, sampleRate: sampleRate)
 
+        let gain = nextWaveformGain(inputPeak: inputPeakSinceLastFFT)
+        var waveform = Self.downsample(window, to: configuration.waveformPoints)
+        if gain != 1 {
+            for i in waveform.indices {
+                waveform[i] = min(1, max(-1, waveform[i] * gain))
+            }
+        }
+
         onResult?(AnalysisResult(
-            waveform: Self.downsample(window, to: configuration.waveformPoints),
+            waveform: waveform,
             magnitudes: magnitudes,
             energy: energy,
             sampleRate: sampleRate,
             fftSize: fft.size,
-            inputPeak: inputPeakSinceLastFFT
+            inputPeak: inputPeakSinceLastFFT,
+            waveformGain: gain
         ))
         inputPeakSinceLastFFT = 0
+    }
+
+    /// 今回の波形に適用する表示ゲインを求め、ピーク追従の状態を更新する。
+    private func nextWaveformGain(inputPeak: Float) -> Float {
+        let settings = configuration.waveformGain
+        guard settings.isAutomatic else {
+            return max(1, settings.manualGain)
+        }
+
+        // ピークは上がるときは即座に、下がるときはゆっくり。
+        // そうしないと音の切れ目で倍率が跳ね上がってノイズが暴れる。
+        followedPeak = max(inputPeak, followedPeak * settings.release)
+
+        guard followedPeak > settings.noiseFloor else { return 1 }
+        let gain = settings.targetAmplitude / followedPeak
+        return min(max(gain, 1), settings.maxGain)
     }
 
     /// 波形描画用の間引き。ブロックごとに絶対値最大のサンプルを採用し、ピークを潰さない。
