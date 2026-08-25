@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 /// メイン画面。背景色が帯域エネルギーで変化し、その上に波形/スペクトラムを重ねる。
@@ -30,7 +31,16 @@ struct VisualizerScreen: View {
 
     // MARK: - 背景
 
+    @ViewBuilder
     private var background: some View {
+        if engine.settings.displayMode.prefersDarkBackground {
+            darkBackground
+        } else {
+            gradientBackground
+        }
+    }
+
+    private var gradientBackground: some View {
         // 単色ではなく色相をずらした 3 点のグラデーションにして、1 画面に複数の色を出す。
         LinearGradient(
             stops: [
@@ -47,38 +57,101 @@ struct VisualizerScreen: View {
         .ignoresSafeArea()
     }
 
+    /// リング表示用の背景。
+    ///
+    /// 発光表現は「背景より明るい」ことで成立するので、グラデーション背景のままだとバーが沈む。
+    /// ほぼ黒に落としたうえで、中心にだけ現在色をごく薄く残して真っ黒を避ける。
+    private var darkBackground: some View {
+        ZStack {
+            Color.black
+            RadialGradient(
+                colors: [
+                    Color(engine.color.adjusted(saturation: 1.0, brightness: 0.9)).opacity(0.18),
+                    .clear
+                ],
+                center: .center,
+                startRadius: 0,
+                endRadius: 420
+            )
+        }
+        .animation(.easeOut(duration: 0.1), value: engine.color)
+        .ignoresSafeArea()
+    }
+
     // MARK: - 波形 / スペクトラム
 
     private var content: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !engine.status.isRunning)) { _ in
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !engine.status.isRunning)) { timeline in
+            let mode = engine.settings.displayMode
             let accent = engine.color.accent
 
-            VStack(spacing: 24) {
-                if engine.settings.displayMode != .spectrum {
-                    WaveformCanvas(
-                        samples: engine.snapshot.waveform,
-                        baseColor: accent,
-                        hueSpread: engine.settings.hueSpread * 0.6
-                    )
-                    // 上限は決めるが、領域が足りなければ縮む (`height` だとはみ出して重なる)。
-                    .frame(maxHeight: engine.settings.displayMode == .both ? 140 : 260)
-                }
-                if engine.settings.displayMode != .waveform {
-                    SpectrumCanvas(
-                        magnitudes: engine.snapshot.magnitudes,
-                        sampleRate: engine.snapshot.sampleRate,
-                        baseColor: accent,
-                        hueSpread: engine.settings.hueSpread
-                    )
-                    .frame(maxHeight: engine.settings.displayMode == .both ? 180 : 300)
+            Group {
+                if mode.showsRadialSpectrum {
+                    radialSpectrum(accent: accent, date: timeline.date)
+                } else {
+                    stackedCanvases(mode: mode, accent: accent)
                 }
             }
-            .padding(.horizontal, 20)
             // 余白を埋めてから中央寄せする。これで描画はオーバーレイの内側に収まる。
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .padding(.top, topOverlayHeight)
         .padding(.bottom, bottomOverlayHeight)
+    }
+
+    /// 従来の縦積み表示 (波形 / 横並びスペクトラム)。
+    private func stackedCanvases(mode: VisualizerSettings.DisplayMode, accent: HSBColor) -> some View {
+        VStack(spacing: 24) {
+            if mode.showsWaveform {
+                WaveformCanvas(
+                    samples: engine.snapshot.waveform,
+                    baseColor: accent,
+                    hueSpread: engine.settings.hueSpread * 0.6
+                )
+                // 上限は決めるが、領域が足りなければ縮む (`height` だとはみ出して重なる)。
+                .frame(maxHeight: mode == .both ? 140 : 260)
+            }
+            if mode.showsLinearSpectrum {
+                SpectrumCanvas(
+                    magnitudes: engine.snapshot.magnitudes,
+                    sampleRate: engine.snapshot.sampleRate,
+                    baseColor: accent,
+                    hueSpread: engine.settings.hueSpread
+                )
+                .frame(maxHeight: mode == .both ? 180 : 300)
+            }
+        }
+        .padding(.horizontal, 20)
+    }
+
+    /// リング表示。回転位相だけは時刻から作るので `TimelineView` の date を受け取る。
+    private func radialSpectrum(accent: HSBColor, date: Date) -> some View {
+        let radial = engine.settings.radial
+        return RadialSpectrumCanvas(
+            magnitudes: engine.snapshot.magnitudes,
+            sampleRate: engine.snapshot.sampleRate,
+            baseColor: accent,
+            barCount: radial.barCount,
+            hueSpread: radial.hueSpread,
+            innerRadiusRatio: radial.innerRadiusRatio,
+            barLengthRatio: radial.barLengthRatio,
+            isMirrored: radial.isMirrored,
+            pulse: Double(engine.snapshot.energy.low),
+            pulseDepth: radial.pulseDepth,
+            rotation: Self.rotationPhase(at: date, speed: radial.rotationSpeed),
+            glowRadius: radial.glowRadius
+        )
+        .aspectRatio(1, contentMode: .fit)
+        .padding(.horizontal, 12)
+    }
+
+    /// 経過時間から 0..<1 の回転位相を作る。
+    ///
+    /// 絶対時刻の剰余なので、フレーム落ちしても位相がずれ続けない (積算しない)。
+    static func rotationPhase(at date: Date, speed: Double) -> Double {
+        guard speed != 0 else { return 0 }
+        let turns = date.timeIntervalSinceReferenceDate * speed
+        return turns - turns.rounded(.down)
     }
 
     // MARK: - オーバーレイ (操作系)

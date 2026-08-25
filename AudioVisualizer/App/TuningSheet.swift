@@ -8,15 +8,23 @@ struct TuningSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("表示") {
+                Section {
+                    // 4 モードになりセグメントだと日本語ラベルが潰れるため、既定のスタイル (メニュー) にしている。
                     Picker("モード", selection: binding(\.displayMode)) {
                         ForEach(VisualizerSettings.DisplayMode.allCases) { mode in
                             Text(mode.label).tag(mode)
                         }
                     }
-                    .pickerStyle(.segmented)
 
                     Toggle("帯域メーターを表示", isOn: binding(\.showsDiagnostics))
+                } header: {
+                    Text("表示")
+                } footer: {
+                    Text("「リング」はスペクトラムを円環に配置した発光表示。背景も暗転する。")
+                }
+
+                if engine.settings.displayMode == .radial {
+                    radialSection
                 }
 
                 Section {
@@ -91,6 +99,33 @@ struct TuningSheet: View {
                     Button("完了") { dismiss() }
                 }
             }
+        }
+    }
+
+    // MARK: - リング
+
+    /// リング表示のときだけ出すセクション。他モードには効かない値なので混ぜない。
+    @ViewBuilder
+    private var radialSection: some View {
+        Section {
+            Picker("バー本数 (半周)", selection: binding(\.radial.barCount)) {
+                ForEach(VisualizerSettings.RadialSettings.availableBarCounts, id: \.self) { count in
+                    Text("\(count)").tag(count)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Toggle("左右対称", isOn: binding(\.radial.isMirrored))
+            slider("リング半径", value: binding(\.radial.innerRadiusRatio), range: 0.2...0.6, format: "%.2f")
+            slider("バーの長さ", value: binding(\.radial.barLengthRatio), range: 0.1...0.5, format: "%.2f")
+            slider("色相の一周量", value: binding(\.radial.hueSpread), range: 0...1, format: "%.2f")
+            slider("発光の強さ", value: binding(\.radial.glowRadius), range: 0...30, format: "%.0f")
+            slider("拍で膨らむ量", value: binding(\.radial.pulseDepth), range: 0...0.3, format: "%.2f")
+            slider("回転 (周/秒)", value: binding(\.radial.rotationSpeed), range: 0...0.1, format: "%.3f")
+        } header: {
+            Text("リング")
+        } footer: {
+            Text("左右対称は低域を天頂、高域を真下に置いて右半分を鏡像化する。切ると円周一周を低域→高域で使う。色相の一周量 1.0 で虹が一周する。")
         }
     }
 

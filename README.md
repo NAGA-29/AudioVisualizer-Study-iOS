@@ -26,7 +26,7 @@
         ↓ BandEnergy { low, mid, high, overall, isBeat }
 [ColorMapper]    BandEnergy → HSBColor (Hueの変化速度に上限あり)
         ↓
-[VisualizerScreen]  SwiftUI Canvas で波形/スペクトラム + 背景色
+[VisualizerScreen]  SwiftUI Canvas で波形/スペクトラム/円環スペクトラム + 背景色
 ```
 
 依存は上から下への一方向。各層は単体で初期化・テストでき、
@@ -49,9 +49,10 @@ AudioVisualizer/
   Audio/   AudioInputSource, MicInputSource, PlayerTapInputSource,
            AudioSessionObserver (割り込み/ルート変更), MicrophonePermission
   DSP/     FFTProcessor, BandAnalyzer, BandEnergy, AudioAnalyzer, SampleRingBuffer
-  Visual/  ColorMapper, HSBColor, WaveformCanvas, SpectrumCanvas, BandMeterView
+  Visual/  ColorMapper, HSBColor, WaveformCanvas, SpectrumCanvas,
+           RadialSpectrumCanvas (円環表示), BandMeterView
 AudioVisualizerTests/   FFT / 帯域解析 / 色マッピング / リングバッファの単体テスト
-docs/                   実験ノート
+docs/                   実験ノート / ADR (docs/adr)
 ```
 
 ## セットアップ
@@ -83,6 +84,8 @@ xcodebuild test \
 
 | 項目 | 効果 |
 | --- | --- |
+| 表示モード (波形 / スペクトラム / 両方 / リング) | 描画の切り替え。「リング」は円環状の発光表示で、背景も暗転する |
+| リング (バー本数 / 半径 / 長さ / 色相の一周量 / 発光 / 拍 / 回転) | リング選択時のみ表示される専用パラメータ |
 | FFT サイズ (1024/2048/4096) | 周波数分解能 ↑ / 反応速度 ↓ |
 | タップバッファ | `installTap` の粒度。FFT 長とは独立 |
 | EMA 係数 | 大きいほど滑らかで鈍い (0.7 前後が出発点) |
@@ -105,3 +108,4 @@ xcodebuild test \
   他ユーザーとのリアルタイム共有 / 音楽ジャンル判定などの ML 処理。
 
 検証観点と結果の記録は [`docs/EXPERIMENT_NOTES.md`](docs/EXPERIMENT_NOTES.md) に置いている。
+設計判断の経緯は [`docs/adr/`](docs/adr/)、変更履歴は [`docs/CHANGELOG.md`](docs/CHANGELOG.md)。
