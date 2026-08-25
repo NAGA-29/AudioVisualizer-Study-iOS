@@ -1,5 +1,24 @@
 # CHANGELOG
 
+## 2026-08-25
+
+### 修正: 円環スペクトラム (リング) のはみ出し・コントラスト不足
+
+マージ済みの円環スペクトラム表示 (`docs/adr/0001-radial-spectrum-visual.md`) をレビューし、
+2 件の不具合を修正した。経緯は [`docs/adr/0002-radial-spectrum-fixes.md`](adr/0002-radial-spectrum-fixes.md) に記録。
+
+- `Visual/RadialSpectrumCanvas.swift`
+  - `clampedBarLength(unit:baseRadius:requestedLength:ringDeform:)` を追加。
+    チューニングパネルの `innerRadiusRatio` (最大 0.6) と `barLengthRatio` (最大 0.5) を
+    組み合わせただけで外周がキャンバス半径を超え、バーの先端が画面端で切れる不具合を修正。
+  - `barColor` の明度下限を `0.4` → `0.12` に変更。無音の帯域が黒背景へ沈まず、
+    常時それなりの明るさで点灯して見えていたコントラスト不足を修正した。
+- `AudioVisualizerTests/RadialSpectrumCanvasTests.swift`
+  - `clampedBarLength` の単体テストを追加 (要求どおりの長さを返すケース / スライダー上限の
+    組み合わせで絞られるケース / 負にならないこと / `unit = 0` のケース)。
+
+未検証: 実機/シミュレータでのビルドと動作確認 (この作業環境に Xcode がないため)。
+
 ## 2026-08-23
 
 ### 追加: 円環スペクトラム (リング) 表示
