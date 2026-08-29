@@ -53,7 +53,16 @@ struct RadialSpectrumCanvas: View {
             guard unit > 0 else { return }
 
             let baseRadius = unit * CGFloat(innerRadiusRatio) * CGFloat(1 + pulseDepth * clampUnit(pulse))
-            let maxLength = unit * CGFloat(barLengthRatio)
+            // innerRadiusRatio / barLengthRatio はチューニングパネルで独立に動かせるため、
+            // 素直に掛け合わせると外周がキャンバスの外へはみ出して切れることがある
+            // (例: 半径比 0.6 + 長さ比 0.5 だけで合計 1.1 を超える)。
+            // 外周がキャンバス半径 (unit) を超えないよう、内周とうねり幅から逆算して長さを絞る。
+            let maxLength = Self.clampedBarLength(
+                unit: unit,
+                baseRadius: baseRadius,
+                requestedLength: unit * CGFloat(barLengthRatio),
+                ringDeform: ringDeform
+            )
             // 隣のバーと触れない太さ。本数が増えるほど自動的に細くなる。
             let slot = 2 * CGFloat.pi * baseRadius / CGFloat(bars.count)
             let lineWidth = max(1.5, slot * 0.55)
@@ -104,6 +113,18 @@ struct RadialSpectrumCanvas: View {
     }
 
     // MARK: - 配置 (純関数)
+
+    /// バー最大長を、外周がキャンバス半径 (`unit`) を超えない範囲まで絞る。
+    ///
+    /// 外周は `baseRadius + maxLength * (1 + ringDeform)` (内周の押し出しぶん込み) まで届きうる。
+    /// `innerRadiusRatio` と `barLengthRatio` はチューニングパネルで独立に動かせる値なので、
+    /// 何も絞らずに掛け合わせると組み合わせ次第でキャンバスの外へはみ出し、Canvas の clip で
+    /// 見た目がぶつ切りになる。
+    static func clampedBarLength(unit: CGFloat, baseRadius: CGFloat, requestedLength: CGFloat, ringDeform: Double) -> CGFloat {
+        guard unit > 0 else { return 0 }
+        let available = max(0, unit - baseRadius) / CGFloat(1 + max(0, ringDeform))
+        return min(max(0, requestedLength), available)
+    }
 
     /// 半周ぶんのバーを鏡像展開して一周ぶんにする。
     ///
@@ -166,7 +187,11 @@ struct RadialSpectrumCanvas: View {
             // 黒背景に置くので彩度は高めに固定する (背景と混ざらないため)。
             hue: shifted.hue,
             saturation: min(1, base.saturation * 0.3 + 0.7),
-            brightness: min(1, 0.4 + 0.6 * level)
+            // 下限を 0.4 にすると「鳴っていない帯域」でも中程度の明るさで見えてしまい、
+            // 黒背景に沈まず常時点灯したリングに見えていた。下限を大きく下げて、
+            // 実際に鳴っている帯域だけが光って見えるコントラストにする
+            // (完全な 0 にはしない — endpoints() が無音時も 2pt の点を残すので、輪郭として見える最低限は残す)。
+            brightness: min(1, 0.12 + 0.88 * level)
         )
     }
 }

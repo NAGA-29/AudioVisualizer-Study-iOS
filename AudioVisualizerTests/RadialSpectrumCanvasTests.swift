@@ -10,6 +10,47 @@ final class RadialSpectrumCanvasTests: XCTestCase {
 
     private let center = CGPoint(x: 100, y: 100)
 
+    // MARK: - 最大長のクランプ (キャンバスからのはみ出し防止)
+
+    /// 内周半径 + 要求長がキャンバス半径に収まるなら、要求どおりの長さを返す。
+    func testClampedBarLengthKeepsRequestWhenItFits() {
+        let length = RadialSpectrumCanvas.clampedBarLength(
+            unit: 100, baseRadius: 40, requestedLength: 30, ringDeform: 0.35
+        )
+        XCTAssertEqual(length, 30, accuracy: 0.0001)
+    }
+
+    /// 内周半径比 (0.6) + バー長比 (0.5) のように、チューニングパネルの上限同士を
+    /// 組み合わせただけで合計が 1.0 を超えるケース。外周がキャンバス半径を超えないよう絞る。
+    func testClampedBarLengthShrinksWhenRequestOverflowsCanvas() {
+        let unit: CGFloat = 100
+        let baseRadius = unit * 0.6
+        let requested = unit * 0.5
+
+        let length = RadialSpectrumCanvas.clampedBarLength(
+            unit: unit, baseRadius: baseRadius, requestedLength: requested, ringDeform: 0.35
+        )
+
+        XCTAssertLessThan(length, requested)
+        // 押し出し込みの最大到達点 (baseRadius + length * (1 + ringDeform)) がキャンバス半径以内。
+        XCTAssertLessThanOrEqual(baseRadius + length * (1 + 0.35), unit + 0.0001)
+    }
+
+    /// 内周だけでキャンバス半径を使い切っている場合、長さは 0 まで絞られる (負の長さにはしない)。
+    func testClampedBarLengthNeverGoesNegative() {
+        let length = RadialSpectrumCanvas.clampedBarLength(
+            unit: 100, baseRadius: 130, requestedLength: 40, ringDeform: 0.35
+        )
+        XCTAssertEqual(length, 0, accuracy: 0.0001)
+    }
+
+    func testClampedBarLengthWithZeroUnitIsZero() {
+        let length = RadialSpectrumCanvas.clampedBarLength(
+            unit: 0, baseRadius: 10, requestedLength: 40, ringDeform: 0.35
+        )
+        XCTAssertEqual(length, 0, accuracy: 0.0001)
+    }
+
     // MARK: - 鏡像展開
 
     func testMirroredDoublesCountAndIsSymmetric() {
